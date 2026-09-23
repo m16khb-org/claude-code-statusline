@@ -1,0 +1,29 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bash: bash
+          - os: macos-latest
+            bash: /bin/bash  # the bash 3.2 that macOS ships
+    runs-on: ${{ matrix.os }}
+    env:
+      TEST_BASH: ${{ matrix.bash }}
+      STATUSLINE_SKIP_PERF: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check
+        run: for f in statusline.sh install.sh uninstall.sh; do "$TEST_BASH" -n "$f"; done
+      - name: Rendering tests
+        run: python3 test/test_statusline.py
+      - name: Install tests
+        run: python3 test/test_install.py
