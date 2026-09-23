@@ -486,6 +486,13 @@ def skip_perf():
         raise Skip("STATUSLINE_SKIP_PERF=1")
 
 
+def wait_for(condition, timeout):
+    """Poll until condition() holds or the timeout passes; the caller asserts afterwards."""
+    deadline = time.time() + timeout
+    while time.time() < deadline and not condition():
+        time.sleep(0.05)
+
+
 def median_ms(fn, n=7):
     samples = []
     for _ in range(n):
@@ -527,12 +534,13 @@ def test_stale_git_cache_renders_immediately_and_refreshes_in_background():
         expect("cached-branch" in visible(rows[0]), f"stale cache not used: {visible(rows[0])!r}")
         if os.environ.get("STATUSLINE_SKIP_PERF") != "1":
             expect(ms < 150, f"render waited for git: {ms:.1f}ms")
-        deadline = time.time() + 10
-        while time.time() < deadline:
+
+        def refresh_finished():
+            # The refresher replaces the cache first and releases the lock a moment later.
             with open(cache) as f:
-                if "cached-branch" not in f.read():
-                    break
-            time.sleep(0.2)
+                return "cached-branch" not in f.read() and not os.path.exists(cache + ".lock")
+
+        wait_for(refresh_finished, timeout=10)
         with open(cache) as f:
             refreshed = f.read()
         expect("# branch.head main" in refreshed, f"cache not refreshed: {refreshed[:120]!r}")
