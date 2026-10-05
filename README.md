@@ -60,9 +60,11 @@ token count, effort and running time drop out. Rows that would not fit even then
 model, such as background shells, keep Claude Code's default row. Claude Code refreshes these rows every
 5 seconds.
 
-Agent team teammates are not passed to `subagentStatusLine`, so their rows keep the default format. With
-`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, every subagent Claude names launches as a teammate. Set it to
-`0` if you want named subagents to get these rows; the name still works as a `SendMessage` address.
+With agent teams enabled (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`), every subagent Claude names launches
+as a teammate. Claude Code does not pass teammates to `subagentStatusLine`
+([anthropics/claude-code#87716](https://github.com/anthropics/claude-code/issues/87716)), so teammate rows
+keep the default format while unnamed subagents in the same panel get these rows. To see a worker's model
+and context here, have Claude spawn it without a name.
 
 ## Install
 

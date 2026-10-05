@@ -60,10 +60,11 @@ Claude Code는 status line을 메인 세션 정보로만 만듭니다. 서브에
 토큰 수, effort, 실행 시간 순서로 뺍니다. 그래도 들어가지 않는 행과 백그라운드 셸처럼 모델이 없는 작업은
 Claude Code 기본 행을 그대로 씁니다. Claude Code는 이 행들을 5초마다 갱신합니다.
 
-에이전트 팀의 팀원은 `subagentStatusLine`에 전달되지 않아 기본 행으로 나옵니다.
-`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`이면 Claude가 이름을 붙인 서브에이전트가 모두 팀원으로 뜹니다.
-이름 붙은 서브에이전트에도 이 행을 쓰려면 값을 `0`으로 바꾸세요. 이름은 그대로 `SendMessage` 주소로
-쓸 수 있습니다.
+에이전트 팀을 켜면(`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`) Claude가 이름을 붙인 서브에이전트는 모두
+팀원으로 뜹니다. Claude Code는 팀원을 `subagentStatusLine`에 넘기지 않으므로
+([anthropics/claude-code#87716](https://github.com/anthropics/claude-code/issues/87716)), 같은 패널에서도
+팀원 행은 기본 모양으로 나오고 이름 없는 서브에이전트만 이 행으로 그려집니다. 작업 에이전트의 모델과
+컨텍스트를 여기서 보고 싶으면 이름 없이 띄우도록 Claude에게 요청하세요.
 
 ## 설치
 
