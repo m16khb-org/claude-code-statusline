@@ -33,6 +33,29 @@
 터미널 폭이 좁으면 막대부터 줄입니다. 그다음 캐시, 줄 수, 세션 시간, 비용, PR, effort 순서로 빼고,
 마지막에 디렉터리와 브랜치 이름을 줄입니다.
 
+### 서브에이전트 행
+
+Claude Code는 status line을 메인 세션 정보로만 만듭니다. 서브에이전트 대화로 들어가도 status line에는
+메인 세션의 모델과 컨텍스트가 그대로 나오고, 스크립트 쪽에서도 지금 어떤 서브에이전트를 보고 있는지 알
+방법이 없습니다. 그래서 설치 스크립트는 `subagentStatusLine`도 함께 설정합니다. 이 설정은 프롬프트 아래
+에이전트 패널에서 서브에이전트마다 한 행씩 다시 그려, 각자의 수치를 보여 줍니다.
+
+```
+ Opus 5.5  high  reviewer · Reading statusline.sh  ctx ▆▆▆▆▆▆▆▆ 31% 312k/1M · 3m
+ Haiku 4.5  Find the auth handlers                  ctx ▆▆▆▆▆▆▆▆ 74% 148k/200k · 42s
+ Sonnet 5.5  medium  Summarize the open issues     ctx ▆▆▆▆▆▆▆▆ 6% 61k/1M · ✓
+```
+
+- 서브에이전트의 모델과 effort를 1줄과 같은 색의 칩으로 보여 줍니다. effort는 서브에이전트에 따로
+  지정했을 때만 나옵니다.
+- 이름이 있으면 이름을, 그 뒤에 지금 하고 있는 작업을 보여 줍니다.
+- `ctx`는 그 서브에이전트의 컨텍스트 사용량입니다. 그 뒤에 실행 시간이 붙고, 끝나면 `✓` 또는 `✘`로
+  바뀝니다.
+
+게이지는 모든 행에서 같은 열에 맞춰 나옵니다. 터미널 폭이 좁으면 작업 설명부터 자르고, 그다음 막대,
+토큰 수, effort, 실행 시간 순서로 뺍니다. 그래도 들어가지 않는 행과 백그라운드 셸처럼 모델이 없는 작업은
+Claude Code 기본 행을 그대로 씁니다. Claude Code는 이 행들을 5초마다 갱신합니다.
+
 ## 설치
 
 필요한 것: Claude Code, bash 3.2 이상, [jq](https://jqlang.org)(최신 macOS에는 기본 포함), git(선택).
@@ -44,18 +67,24 @@ cd claude-code-statusline
 ```
 
 설치 스크립트는 `statusline.sh`를 `~/.claude/claude-code-statusline/`에 복사합니다. `$CLAUDE_CONFIG_DIR`이
-설정되어 있으면 그 폴더를 씁니다. 그다음 `settings.json`을 백업하고 `statusLine` 항목을 설정합니다.
+설정되어 있으면 그 폴더를 씁니다. 그다음 `settings.json`을 백업하고 `statusLine`과 `subagentStatusLine`
+항목을 설정합니다.
 
 ```json
 "statusLine": {
   "type": "command",
   "command": "bash \"/Users/you/.claude/claude-code-statusline/statusline.sh\"",
   "refreshInterval": 30
+},
+"subagentStatusLine": {
+  "type": "command",
+  "command": "bash \"/Users/you/.claude/claude-code-statusline/statusline.sh\" --subagents"
 }
 ```
 
 Claude Code는 변경 사항을 바로 반영합니다. 업데이트는 `git pull && ./install.sh`로 합니다. 제거하려면
-`./uninstall.sh`를 실행하세요. 설치 전에 쓰던 statusLine을 되돌려 놓습니다.
+`./uninstall.sh`를 실행하세요. 설치 전에 쓰던 statusLine과 subagentStatusLine을 되돌려 놓습니다.
+서브에이전트 행을 기본 모양으로 두고 싶으면 `subagentStatusLine` 항목을 지우면 됩니다.
 
 Claude Code를 켜지 않고도 모든 상태를 미리 볼 수 있습니다.
 
@@ -93,6 +122,7 @@ bash ~/.claude/claude-code-statusline/statusline.sh --demo
 한 번 그리는 데 20~40ms가 걸립니다. 세션 JSON은 `jq`를 한 번만 호출해 읽습니다. `git status`는
 백그라운드에서 실행하고 결과를 5초 동안 캐시하므로, 저장소가 느려도 화면 갱신이 늦어지지 않습니다.
 Claude Code는 다음 갱신이 오면 실행 중인 스크립트를 취소하기 때문에, 스크립트가 느리면 갱신을 놓치게 됩니다.
+서브에이전트 행은 `jq`를 두 번 호출하고 git은 쓰지 않으며, 10~20ms가 걸립니다.
 
 ## 개발
 

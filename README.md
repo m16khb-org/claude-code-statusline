@@ -34,6 +34,28 @@ prompt cache expires.
 On narrow terminals the bars shrink first. Then the cache, lines, duration, cost, PR and effort drop out,
 and finally the directory and branch are shortened.
 
+### Subagent rows
+
+Claude Code builds the status line from the main session only. When you open a subagent's transcript,
+the status line keeps showing the main session's model and context, and a status line script has no way
+to tell which subagent you are viewing. To show each subagent's own numbers, the installer also sets
+`subagentStatusLine`, which redraws each subagent's row in the agent panel below the prompt:
+
+```
+ Opus 5.5  high  reviewer · Reading statusline.sh  ctx ▆▆▆▆▆▆▆▆ 31% 312k/1M · 3m
+ Haiku 4.5  Find the auth handlers                  ctx ▆▆▆▆▆▆▆▆ 74% 148k/200k · 42s
+ Sonnet 5.5  medium  Summarize the open issues     ctx ▆▆▆▆▆▆▆▆ 6% 61k/1M · ✓
+```
+
+- The subagent's model and its effort, when the subagent sets one, as chips colored like row 1.
+- Its name, if it has one, and what it is doing now.
+- `ctx`: the subagent's own context window, then its running time, or `✓` / `✘` once it has finished.
+
+The gauges line up in one column. On a narrow terminal the activity text is cut first, then the bar,
+token count, effort and running time drop out. Rows that would not fit even then, and tasks that have no
+model, such as background shells, keep Claude Code's default row. Claude Code refreshes these rows every
+5 seconds.
+
 ## Install
 
 Requirements: Claude Code, bash 3.2 or later, [jq](https://jqlang.org) (preinstalled on recent macOS),
@@ -46,18 +68,23 @@ cd claude-code-statusline
 ```
 
 The installer copies `statusline.sh` to `~/.claude/claude-code-statusline/` (`$CLAUDE_CONFIG_DIR` when it
-is set), backs up `settings.json`, and sets its `statusLine` entry:
+is set), backs up `settings.json`, and sets its `statusLine` and `subagentStatusLine` entries:
 
 ```json
 "statusLine": {
   "type": "command",
   "command": "bash \"/Users/you/.claude/claude-code-statusline/statusline.sh\"",
   "refreshInterval": 30
+},
+"subagentStatusLine": {
+  "type": "command",
+  "command": "bash \"/Users/you/.claude/claude-code-statusline/statusline.sh\" --subagents"
 }
 ```
 
 Claude Code picks up the change right away. To update, run `git pull && ./install.sh`. To remove it,
-run `./uninstall.sh`, which restores the statusLine you had before.
+run `./uninstall.sh`, which restores the statusLine and subagentStatusLine you had before. To keep the
+default subagent rows, delete the `subagentStatusLine` entry.
 
 Preview every state without starting Claude Code:
 
@@ -95,7 +122,7 @@ Put these variables in front of the command in `settings.json`, for example
 A render takes about 20 to 40 ms. One `jq` call reads the session JSON. `git status` runs in the
 background and its result is cached for 5 seconds, so a slow repository never delays a render. Claude
 Code cancels a render that is still running when the next update arrives, so a slow script would miss
-updates.
+updates. The subagent rows take about 10 to 20 ms, with two `jq` calls and no git.
 
 ## Development
 
