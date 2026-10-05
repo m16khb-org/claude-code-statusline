@@ -142,6 +142,73 @@ def test_uninstall_leaves_a_statusline_changed_after_install():
     expect(settings(cfg)["statusLine"]["command"] == "mine.sh", settings(cfg))
 
 
+OLD_SUB = {"type": "command", "command": "~/.claude/old-subagent-statusline.sh"}
+
+
+def test_install_sets_the_subagent_statusline():
+    cfg = config_dir()
+    sh("install.sh", cfg)
+    s = settings(cfg)
+    sub = s["subagentStatusLine"]
+    expect(sub == {"type": "command", "command": s["statusLine"]["command"] + " --subagents"}, sub)
+
+
+def test_installed_subagent_command_prints_rows():
+    cfg = config_dir(name="claude config")
+    sh("install.sh", cfg, "--plain")
+    command = settings(cfg)["subagentStatusLine"]["command"]
+    expect(command.startswith("STATUSLINE_GLYPHS=plain "), command)
+    tasks = {"columns": 100, "tasks": [{"id": "a1", "status": "running", "description": "Review",
+                                        "model": "claude-haiku-4-5-20251001", "contextWindowSize": 200000,
+                                        "tokenCount": 24000}]}
+    p = subprocess.run(["sh", "-c", command], input=json.dumps(tasks), capture_output=True, text=True,
+                       encoding="utf-8", timeout=30)
+    rows = [json.loads(line) for line in p.stdout.splitlines()]
+    expect(p.returncode == 0 and len(rows) == 1 and "Haiku 4.5" in rows[0]["content"],
+           f"rc={p.returncode} out={p.stdout!r} err={p.stderr!r}")
+
+
+def test_uninstall_restores_both_previous_entries():
+    cfg = config_dir({"statusLine": OLD, "subagentStatusLine": OLD_SUB})
+    sh("install.sh", cfg)
+    expect(saved_previous(cfg) == OLD, saved_previous(cfg))
+    sh("uninstall.sh", cfg)
+    s = settings(cfg)
+    expect(s["statusLine"] == OLD and s["subagentStatusLine"] == OLD_SUB, s)
+
+
+def test_uninstall_removes_a_subagent_statusline_it_added():
+    cfg = config_dir({"statusLine": OLD})
+    sh("install.sh", cfg)
+    sh("uninstall.sh", cfg)
+    expect("subagentStatusLine" not in settings(cfg) and settings(cfg)["statusLine"] == OLD, settings(cfg))
+
+
+def test_upgrade_saves_the_subagent_statusline_it_replaces():
+    # an install from before subagent rows saved only previous-statusline.json
+    cfg = config_dir({"statusLine": OLD})
+    sh("install.sh", cfg)
+    os.remove(os.path.join(cfg, INSTALL_DIR, "previous-subagent-statusline.json"))
+    s = settings(cfg)
+    s["subagentStatusLine"] = OLD_SUB
+    write_settings(cfg, s)
+    sh("install.sh", cfg)
+    sh("uninstall.sh", cfg)
+    s = settings(cfg)
+    expect(s["statusLine"] == OLD and s["subagentStatusLine"] == OLD_SUB, s)
+
+
+def test_uninstall_leaves_a_subagent_statusline_changed_after_install():
+    cfg = config_dir()
+    sh("install.sh", cfg)
+    s = settings(cfg)
+    s["subagentStatusLine"] = {"type": "command", "command": "mine.sh"}
+    write_settings(cfg, s)
+    sh("uninstall.sh", cfg)
+    s = settings(cfg)
+    expect(s["subagentStatusLine"]["command"] == "mine.sh" and "statusLine" not in s, s)
+
+
 def main():
     flt = sys.argv[1] if len(sys.argv) > 1 else ""
     tests = [(n, f) for n, f in globals().items() if n.startswith("test_") and flt in n]

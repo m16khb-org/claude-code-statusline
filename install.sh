@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Install claude-code-statusline: copy statusline.sh into the Claude config directory and point the
-# statusLine entry of settings.json at it. The entry it replaces is kept for uninstall.sh.
+# statusLine and subagentStatusLine entries of settings.json at it. The entries it replaces are kept
+# for uninstall.sh.
 #
 #   ./install.sh           powerline glyphs (a Nerd Font, or a terminal that draws them itself)
 #   ./install.sh --plain   no private-use glyphs, for any other font
@@ -12,7 +13,7 @@ glyphs=""
 case "${1:-}" in
   "") ;;
   --plain) glyphs=plain ;;
-  -h | --help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h | --help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
 esac
 
@@ -34,11 +35,15 @@ mkdir -p "$dir"
 cp "$src" "$dir/statusline.sh"
 chmod +x "$dir/statusline.sh"
 
-# Keep the statusLine being replaced, unless it is already ours (a reinstall or an upgrade).
-if [ ! -f "$dir/previous-statusline.json" ]; then
-  jq '.statusLine // null | if (.command? // "") | contains("claude-code-statusline/statusline.sh")
-      then null else . end' "$settings" > "$dir/previous-statusline.json"
-fi
+# Keep each entry being replaced, unless it is already ours (a reinstall or an upgrade). An upgrade
+# from a version without subagent rows still saves the subagentStatusLine it is about to replace.
+save_previous() {  # save_previous <settings key> <file>
+  [ -f "$dir/$2" ] && return 0
+  jq --arg key "$1" '.[$key] // null | if (.command? // "") | contains("claude-code-statusline/statusline.sh")
+      then null else . end' "$settings" > "$dir/$2"
+}
+save_previous statusLine previous-statusline.json
+save_previous subagentStatusLine previous-subagent-statusline.json
 
 command="bash \"$dir/statusline.sh\""
 [ -n "$glyphs" ] && command="STATUSLINE_GLYPHS=$glyphs $command"
@@ -46,11 +51,11 @@ command="bash \"$dir/statusline.sh\""
 backup="$settings.bak-$(date +%Y%m%d-%H%M%S)"
 cp "$settings" "$backup"
 tmp=$(mktemp "$settings.XXXXXX")
-jq --arg command "$command" '.statusLine = {type: "command", command: $command, refreshInterval: 30}' \
-  "$settings" > "$tmp"
+jq --arg command "$command" '.statusLine = {type: "command", command: $command, refreshInterval: 30}
+    | .subagentStatusLine = {type: "command", command: ($command + " --subagents")}' "$settings" > "$tmp"
 cat "$tmp" > "$settings"  # write through, keeping the file's permissions and any symlink
 rm -f "$tmp"
 
 echo "Installed $dir/statusline.sh"
-echo "Updated statusLine in $settings (backup: $backup)"
+echo "Updated statusLine and subagentStatusLine in $settings (backup: $backup)"
 echo "Preview every state with: bash \"$dir/statusline.sh\" --demo"
