@@ -130,13 +130,15 @@ def full(overrides=None):
 
 
 def run(data, cols=200, theme="dark", git=GIT_CLEAN, raw_stdin=None, args=(), glyphs=None, colors=None,
-        colorterm="truecolor", path=None):
+        colorterm="truecolor", path=None, usage=""):
     env = dict(os.environ)
-    for key in ("STATUSLINE_THEME", "STATUSLINE_GIT_RAW", "STATUSLINE_GLYPHS", "STATUSLINE_COLORS", "COLORTERM"):
+    for key in ("STATUSLINE_THEME", "STATUSLINE_GIT_RAW", "STATUSLINE_GLYPHS", "STATUSLINE_COLORS", "COLORTERM",
+                "STATUSLINE_USAGE_RAW"):
         env.pop(key, None)
     env["COLUMNS"] = str(cols)
     for key, value in (("STATUSLINE_THEME", theme), ("STATUSLINE_GIT_RAW", git), ("STATUSLINE_GLYPHS", glyphs),
-                       ("STATUSLINE_COLORS", colors), ("COLORTERM", colorterm), ("PATH", path)):
+                       ("STATUSLINE_COLORS", colors), ("COLORTERM", colorterm), ("PATH", path),
+                       ("STATUSLINE_USAGE_RAW", usage)):
         if value is not None:
             env[key] = value
     stdin = raw_stdin if raw_stdin is not None else json.dumps(data)
@@ -405,6 +407,45 @@ def test_expired_reset_hides_countdown():
     expect("5h" in v and "↻-" not in v and "↻1" not in v.split("7d")[0], v)
 
 
+FABLE = f"Fable 250 {NOW + 280000}"
+
+
+def test_model_scoped_weekly_limit_follows_7d_gauge():
+    _, out, _, rows = run(full(), usage=FABLE)
+    v = visible(rows[1])
+    expect("Fable" in v and v.index("Fable") > v.index("7d"), v)
+    expect("25%" in v.split("Fable")[1] and "↻3d5h" in v.split("Fable")[1], v)
+
+
+def test_no_model_scoped_gauge_without_usage():
+    _, out, _, rows = run(full())
+    expect("Fable" not in visible(rows[1]), visible(rows[1]))
+
+
+def test_malformed_usage_lines_are_skipped():
+    _, out, _, rows = run(full(), usage=f"Broken x y\nFable 250 {NOW + 280000}\n")
+    v = visible(rows[1])
+    expect("Broken" not in v and "Fable" in v, v)
+
+
+def test_model_scoped_gauge_reads_fresh_cache():
+    tmp = tempfile.mkdtemp()
+    cache_dir = os.path.join(tmp, "claude-statusline")
+    os.makedirs(cache_dir)
+    with open(os.path.join(cache_dir, "usage"), "w") as f:
+        f.write(f"{NOW}\n{FABLE}\n")
+    env_tmp = os.environ.get("TMPDIR")
+    os.environ["TMPDIR"] = tmp
+    try:
+        _, out, _, rows = run(full(), usage=None)
+        expect("Fable" in visible(rows[1]), visible(rows[1]))
+    finally:
+        if env_tmp is None:
+            os.environ.pop("TMPDIR", None)
+        else:
+            os.environ["TMPDIR"] = env_tmp
+
+
 def test_missing_context_percentage_omits_ctx_gauge():
     _, out, _, rows = run(full({"context_window.used_percentage": None}))
     expect("ctx" not in visible(out) and "null" not in visible(out), visible(out))
@@ -452,7 +493,7 @@ def test_unset_theme_still_renders():
 def test_rows_fit_narrow_terminals():
     data = full()
     for cols in (100, 80, 60, 45):
-        _, out, _, rows = run(data, cols=cols, git=GIT_DIRTY)
+        _, out, _, rows = run(data, cols=cols, git=GIT_DIRTY, usage=FABLE)
         for i, row in enumerate(rows):
             expect(width(row) <= cols - 4, f"cols={cols} row{i + 1} width={width(row)}: {visible(row)!r}")
 

@@ -3,7 +3,7 @@
 # https://github.com/m16khb-org/claude-code-statusline (MIT)
 #
 #   Row 1  [model][effort] [dir] [git] [PR/MR]  cost · duration · +added −removed · cache TTL
-#   Row 2  ctx / 5h / 7d gauges: gradient bar, used %, reset countdown (↻), and a red ⚠ time-to-limit
+#   Row 2  ctx / 5h / 7d / per-model weekly (e.g. Fable) gauges: gradient bar, used %, reset countdown (↻), and a red ⚠ time-to-limit
 #          warning when the window's average pace would exhaust it before the reset.
 # Usage colors: <50% green, 50-64 yellow, 65-79 orange, >=80 red. Narrow terminals ($COLUMNS) shrink
 # the bars first, then drop cache → lines → duration → cost → PR → effort, cut dir and branch short,
@@ -36,6 +36,7 @@ case "${STATUSLINE_COLORS:-$COLORTERM}" in
 esac
 CACHE_DIR="${TMPDIR:-/tmp}/claude-statusline"
 GIT_TTL=5
+USAGE_TTL=120
 THEME_TTL=30
 
 # ${#var} must count characters, not bytes, for the width budget.
@@ -145,6 +146,41 @@ refresh_git() {  # refresh_git <cache-file>: one refresher at a time; a lock old
   fi
   out=$(git -C "$cwd" --no-optional-locks status --porcelain=v2 --branch 2>/dev/null)
   printf '%s\n%s' "$now" "$out" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f" 2>/dev/null
+  rm -f "$lock"
+}
+
+load_usage() {  # USAGE_RAW = "<label> <pct-tenths> <resets_at>" per model-scoped weekly limit
+  # The statusLine input carries no per-model windows (Fable), so they come from the OAuth usage
+  # endpoint, cached for USAGE_TTL seconds and always refreshed in the background.
+  if [ -n "${STATUSLINE_USAGE_RAW+x}" ]; then USAGE_RAW=$STATUSLINE_USAGE_RAW; return 0; fi
+  local f="$CACHE_DIR/usage" stamp=""
+  USAGE_RAW=""
+  [ -r "$f" ] && { IFS= read -r stamp; IFS= read -r -d '' USAGE_RAW; } < "$f"
+  case $stamp in '' | *[!0-9]*) stamp=0 ;; esac
+  [ "$now" -ge "$stamp" ] && [ $(( now - stamp )) -lt "$USAGE_TTL" ] && return 0
+  refresh_usage "$f" < /dev/null > /dev/null 2>&1 &
+  return 0
+}
+
+refresh_usage() {  # refresh_usage <cache-file>: like refresh_git; a failed fetch keeps the old cache
+  local f=$1 lock="$1.lock" held="" token out
+  if ! ( set -o noclobber; printf '%s' "$now" > "$lock" ) 2>/dev/null; then
+    read -r held < "$lock" 2>/dev/null
+    case $held in '' | *[!0-9]*) held=0 ;; esac
+    [ $(( now - held )) -gt 30 ] || return 0
+    printf '%s' "$now" > "$lock" 2>/dev/null
+  fi
+  token=$(jq -r '.claudeAiOauth.accessToken // empty' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json" 2>/dev/null)
+  [ -z "$token" ] && command -v security > /dev/null 2>&1 &&
+    token=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+  if [ -n "$token" ] && out=$(curl -sf -m 5 https://api.anthropic.com/api/oauth/usage \
+      -H "Authorization: Bearer $token" -H "anthropic-beta: oauth-2025-04-20" | jq -r '
+        .limits[]? | select(.kind == "weekly_scoped" and (.scope.model.display_name // "") != "")
+        | "\(.scope.model.display_name | gsub("[[:space:]]"; ""))"
+          + " \(.percent * 10 | round)"
+          + " \(.resets_at // "" | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // 0)"'); then
+    printf '%s\n%s' "$now" "$out" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f" 2>/dev/null
+  fi
   rm -f "$lock"
 }
 
@@ -460,7 +496,7 @@ build_row1() {  # build_row1 <level>: 0 shows everything; each level drops the n
   ROW+="${E}[0m"
 }
 
-build_row2() {  # build_row2 <ctx-cells> <limit-cells> <show-tokens> <show-resets>
+build_row2() {  # build_row2 <ctx-cells> <limit-cells> <show-tokens> <show-resets> <show-model-limits>
   ROW="" ROW_W=0
   if [ -n "$ctx_pct" ]; then
     gauge ctx "$ctx_pct" "$1"
@@ -472,6 +508,13 @@ build_row2() {  # build_row2 <ctx-cells> <limit-cells> <show-tokens> <show-reset
   fi
   [ -n "$h5_pct" ] && gauge 5h "$h5_pct" "$2" "$h5_reset" 18000 "$4"
   [ -n "$d7_pct" ] && gauge 7d "$d7_pct" "$2" "$d7_reset" 604800 "$4"
+  if [ "$5" = 1 ]; then
+    local label pct reset
+    while read -r label pct reset; do
+      case $pct$reset in '' | *[!0-9]*) continue ;; esac
+      gauge "$label" "$pct" "$2" "$reset" 604800 "$4"
+    done <<< "$USAGE_RAW"
+  fi
   [ -n "$ROW" ] && ROW+="${E}[0m"
   return 0
 }
@@ -491,6 +534,7 @@ main() {
   [ -d "$CACHE_DIR" ] || mkdir -p "$CACHE_DIR" 2>/dev/null
   pick_theme
   load_git
+  load_usage
   prepare
 
   case $cols in '' | *[!0-9]*) cols=120 ;; esac
@@ -500,7 +544,7 @@ main() {
     [ "$ROW_W" -le "$avail" ] && break
   done
   row1=$ROW
-  for lvl in "10 8 1 1" "8 6 1 1" "6 4 1 1" "0 0 1 1" "0 0 0 1" "0 0 0 0"; do
+  for lvl in "10 8 1 1 1" "8 6 1 1 1" "6 4 1 1 1" "0 0 1 1 1" "0 0 0 1 1" "0 0 0 0 1" "0 0 0 0 0"; do
     build_row2 $lvl
     [ "$ROW_W" -le "$avail" ] && break
   done
@@ -686,7 +730,8 @@ demo_case() {  # demo_case <title> <columns, 0 = current> <git porcelain> <jq fi
   local cols=$2
   [ "$cols" = 0 ] && cols=${COLUMNS:-120}
   printf '\n%s[2m── %s ──%s[0m\n' "$E" "$1" "$E"
-  jq -n --argjson now "$now" "$base | $4" | COLUMNS=$cols STATUSLINE_GIT_RAW=$3 bash "$0"
+  jq -n --argjson now "$now" "$base | $4" |
+    COLUMNS=$cols STATUSLINE_GIT_RAW=$3 STATUSLINE_USAGE_RAW="Fable 250 $(( now + 280000 ))" bash "$0"
   printf '\n'
 }
 
