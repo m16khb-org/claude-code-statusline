@@ -27,6 +27,10 @@ prompt cache expires.
 
 - `ctx`: context window used, with the token count (`283k/1M`). The count turns yellow past 200k tokens.
 - `5h` / `7d`: plan usage limits (Pro and Max plans), with the time until each resets (`↻1h12m`).
+- `Fable`: a weekly limit that applies to one model, when your plan has one. Claude Code does not pass it
+  to the status line, so the script reads it from the same usage endpoint `/usage` uses, with the OAuth
+  token Claude Code stores in `~/.claude/.credentials.json` or the macOS keychain. The result is cached
+  for 2 minutes and refreshed in the background; the gauge appears from the second render on.
 - `⚠~45m`: at the window's average pace so far, the limit runs out in about 45 minutes, before it resets.
 - Bars are shaded cell by cell from green to red. Percentages turn yellow at 50%, orange at 65%, and red
   at 80%.
@@ -55,6 +59,10 @@ The gauges line up in one column. On a narrow terminal the activity text is cut 
 token count, effort and running time drop out. Rows that would not fit even then, and tasks that have no
 model, such as background shells, keep Claude Code's default row. Claude Code refreshes these rows every
 5 seconds.
+
+Agent team teammates are not passed to `subagentStatusLine`, so their rows keep the default format. With
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, every subagent Claude names launches as a teammate. Set it to
+`0` if you want named subagents to get these rows; the name still works as a `SendMessage` address.
 
 ## Install
 
@@ -132,8 +140,9 @@ python3 test/test_install.py                          # install.sh and uninstall
 TEST_BASH=/bin/bash python3 test/test_statusline.py   # macOS's bash 3.2
 ```
 
-`STATUSLINE_GIT_RAW` injects `git status --porcelain=v2 --branch` output, so tests do not depend on a real
-repository. The screenshots are rendered with `tools/render_png.py`, which needs Pillow and a monospace
+`STATUSLINE_GIT_RAW` injects `git status --porcelain=v2 --branch` output and `STATUSLINE_USAGE_RAW` the
+per-model limits (`<label> <percent×10> <resets_at>` per line), so tests do not depend on a real
+repository or the network. The screenshots are rendered with `tools/render_png.py`, which needs Pillow and a monospace
 font.
 
 ## License

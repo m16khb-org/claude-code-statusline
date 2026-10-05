@@ -26,6 +26,10 @@
 
 - `ctx`: 사용한 컨텍스트 비율과 토큰 수(`283k/1M`)입니다. 토큰 수는 20만을 넘으면 노란색으로 바뀝니다.
 - `5h` / `7d`: 요금제 사용 한도(Pro, Max 요금제)와 리셋까지 남은 시간(`↻1h12m`)입니다.
+- `Fable`: 요금제에 특정 모델 전용 주간 한도가 있으면 보여 줍니다. Claude Code가 이 값은 status line에
+  넘기지 않으므로, 스크립트가 `/usage`와 같은 사용량 엔드포인트를 직접 조회합니다. 인증에는 Claude Code가
+  `~/.claude/.credentials.json`이나 macOS 키체인에 저장한 OAuth 토큰을 씁니다. 결과는 2분 동안 캐시하고
+  백그라운드에서 갱신하므로, 게이지는 두 번째 갱신부터 나타납니다.
 - `⚠~45m`: 지금까지의 평균 속도로 계속 쓰면 리셋 전에 약 45분 뒤 한도가 찬다는 뜻입니다.
 - 막대는 칸마다 초록에서 빨강으로 칠합니다. 퍼센트 숫자는 50%에서 노랑, 65%에서 주황, 80%에서 빨강이
   됩니다.
@@ -55,6 +59,11 @@ Claude Code는 status line을 메인 세션 정보로만 만듭니다. 서브에
 게이지는 모든 행에서 같은 열에 맞춰 나옵니다. 터미널 폭이 좁으면 작업 설명부터 자르고, 그다음 막대,
 토큰 수, effort, 실행 시간 순서로 뺍니다. 그래도 들어가지 않는 행과 백그라운드 셸처럼 모델이 없는 작업은
 Claude Code 기본 행을 그대로 씁니다. Claude Code는 이 행들을 5초마다 갱신합니다.
+
+에이전트 팀의 팀원은 `subagentStatusLine`에 전달되지 않아 기본 행으로 나옵니다.
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`이면 Claude가 이름을 붙인 서브에이전트가 모두 팀원으로 뜹니다.
+이름 붙은 서브에이전트에도 이 행을 쓰려면 값을 `0`으로 바꾸세요. 이름은 그대로 `SendMessage` 주소로
+쓸 수 있습니다.
 
 ## 설치
 
@@ -132,8 +141,9 @@ python3 test/test_install.py                          # install.sh, uninstall.sh
 TEST_BASH=/bin/bash python3 test/test_statusline.py   # macOS 기본 bash 3.2
 ```
 
-테스트는 `STATUSLINE_GIT_RAW`로 `git status --porcelain=v2 --branch` 출력을 주입하므로 실제 저장소에
-의존하지 않습니다. 스크린샷은 `tools/render_png.py`로 만들며, Pillow와 고정폭 폰트가 필요합니다.
+테스트는 `STATUSLINE_GIT_RAW`로 `git status --porcelain=v2 --branch` 출력을, `STATUSLINE_USAGE_RAW`로
+모델별 한도(한 줄에 `<이름> <퍼센트×10> <resets_at>`)를 주입하므로 실제 저장소나 네트워크에 의존하지
+않습니다. 스크린샷은 `tools/render_png.py`로 만들며, Pillow와 고정폭 폰트가 필요합니다.
 
 ## 라이선스
 
