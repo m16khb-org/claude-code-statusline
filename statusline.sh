@@ -9,6 +9,9 @@
 # the bars first, then drop cache → lines → duration → cost → PR → effort, cut dir and branch short,
 # and finally drop the dir chip.
 #
+# With --subagents it draws the agent panel's rows instead (the subagentStatusLine setting):
+#   [model][effort] name · activity   ctx gauge, tokens · running time, or ✓/✘ once finished
+#
 # Settings (environment variables, e.g. prefixed to the statusLine command):
 #   STATUSLINE_THEME=dark|light       default: macOS appearance, else dark
 #   STATUSLINE_GLYPHS=powerline|plain plain avoids the private-use powerline glyphs, for fonts
@@ -338,23 +341,32 @@ gauge() {  # gauge <label> <pct-tenths> <cells> [<resets_at> <window-s> <show-re
   return 0
 }
 
-prepare() {  # derive chip texts and colors once; build_row1 only chooses which to show
-  case "$model_id $model_name" in
-    *[Oo]pus*) model_bg=$C_PURPLE ;;
-    *[Ss]onnet*) model_bg=$C_CYAN ;;
-    *[Hh]aiku*) model_bg=$C_TEAL ;;
-    *[Ff]able*) model_bg=$C_ORANGE ;;
-    *) model_bg=$C_SILVER ;;
+model_color() {  # model id or name -> REPLY: chip background for its family
+  case $1 in
+    *[Oo]pus*) REPLY=$C_PURPLE ;;
+    *[Ss]onnet*) REPLY=$C_CYAN ;;
+    *[Hh]aiku*) REPLY=$C_TEAL ;;
+    *[Ff]able*) REPLY=$C_ORANGE ;;
+    *) REPLY=$C_SILVER ;;
   esac
+}
 
-  effort_txt=$effort effort_fg=$CHIP_FG
-  case $effort in
+effort_colors() {  # effort level -> effort_bg, effort_fg
+  effort_fg=$CHIP_FG
+  case $1 in
     max) effort_bg=$C_RED ;;
     xhigh) effort_bg=$C_ORANGE ;;
     high) effort_bg=$C_YELLOW ;;
     medium) effort_bg=$C_TEAL ;;
     *) effort_bg=$C_SLATE effort_fg=$CHIP_FG_LIGHT ;;
   esac
+}
+
+prepare() {  # derive chip texts and colors once; build_row1 only chooses which to show
+  model_color "$model_id $model_name"; model_bg=$REPLY
+
+  effort_txt=$effort
+  effort_colors "$effort"
   # Braces matter: bash 3.2 reads the first byte of a following multibyte char as part of the name.
   [ "$fast" = 1 ] && effort_txt="${effort_txt:+${effort_txt}·}fast"
 
@@ -495,6 +507,181 @@ main() {
   if [ -n "$ROW" ]; then printf '%s\n%s' "$row1" "$ROW"; else printf '%s' "$row1"; fi
 }
 
+# --- subagent panel rows (--subagents, for the subagentStatusLine setting) -------------------------
+# Claude Code passes every visible task as {columns, tasks: [...]} and reads back one
+# {"id", "content"} line per row to replace. Tasks without a model (shells, monitors) keep the
+# default row. Labels arrive with a string of per-character cell widths (0, 1, or 2 for CJK and
+# emoji) so they can be cut to fit; bash cannot tell a wide character from a narrow one.
+SUB_JQ='
+def num: if type == "number" then . elif type == "string" then (tonumber? // null) else null end;
+def int: (num // 0) | floor;
+def oneline: tostring | gsub("[[:cntrl:]]+"; " ") | gsub("^ +| +$"; "") | .[:200];
+def cells: [explode[] |
+  if (. >= 768 and . < 880) or (. >= 8203 and . <= 8207) or (. >= 65024 and . <= 65039) then "0"
+  elif (. >= 4352 and . <= 4447) or (. >= 11904 and . <= 42191) or (. >= 44032 and . <= 55203)
+    or (. >= 63744 and . <= 64255) or (. >= 65072 and . <= 65103) or (. >= 65280 and . <= 65376)
+    or (. >= 65504 and . <= 65510) or (. >= 127744 and . <= 129791) or (. >= 131072 and . <= 262141) then "2"
+  else "1" end] | join("");
+def digits($t; $i; $step):
+  if $i >= 0 and ($t[$i] // "" | test("^[0-9]{1,2}$")) then [$t[$i]] + digits($t; $i + $step; $step) else [] end;
+# claude-haiku-4-5-20251001 -> Haiku 4.5, claude-3-5-sonnet-20241022 -> Sonnet 3.5, else the id itself
+def model_label:
+  sub("\\[[^\\]]*\\]$"; "") as $raw
+  | [$raw | ascii_downcase | splits("[-.:@_/]")] as $t
+  | ([$t | to_entries[] | select(.value | test("^(opus|sonnet|haiku|fable)$")) | .key] | first) as $f
+  | if $f == null then $raw
+    else (digits($t; $f + 1; 1) | if length > 0 then . else (digits($t; $f - 1; -1) | reverse) end) as $v
+      | ($t[$f][:1] | ascii_upcase) + $t[$f][1:] + (if $v == [] then "" else " " + ($v | join(".")) end)
+    end;
+(now | floor) as $now
+| "now=\($now)", "cols=\(.columns | int)",
+  ([.tasks[]? | select(type == "object" and (.model // "") != "")] | to_entries[]
+   | .key as $i | .value
+   | (.startTime | num // 0) as $st
+   | (.name // "" | oneline) as $name
+   | {
+       id: (.id // "" | tostring),
+       model: (.model | tostring | model_label),
+       effort: (.effort | if type == "number" then (if . >= 1000 then "\(. / 1000 | floor)k" else tostring end)
+                else (. // "" | tostring) end),
+       name: $name,
+       label: (.label // .description // "" | oneline | if . == $name then "" else . end),
+       tokens: (.tokenCount | int),
+       size: (.contextWindowSize | int),
+       status: (.status // "" | tostring),
+       age: (if $st <= 0 then -1 else $now - (if $st > 100000000000 then $st / 1000 else $st end | floor) end)
+     }
+   | .label_cells = (.label | cells)
+   | .name_w = (.name | cells | explode | map(. - 48) | add // 0)
+   | .label_w = (.label_cells | explode | map(. - 48) | add // 0)
+   | to_entries[] | "s_\(.key)[\($i)]=\(.value | tostring | @sh)")'
+
+clip() {  # clip <text> <cell widths> <max cells>: REPLY = text, cut with a trailing … to fit; REPLY_W = its width
+  local s=$1 w=$2 max=$3 i used=0 c
+  REPLY="" REPLY_W=0
+  [ "$max" -gt 0 ] || return 0
+  for (( i = 0; i < ${#w}; i++ )); do
+    c=${w:i:1}
+    [ $(( used + c )) -le "$max" ] || break
+    used=$(( used + c ))
+  done
+  if [ "$i" -ge ${#w} ]; then REPLY=$s REPLY_W=$used; return 0; fi
+  while [ "$i" -gt 0 ] && [ $(( used + 1 )) -gt "$max" ]; do  # make room for the …
+    i=$(( i - 1 )) used=$(( used - ${w:i:1} ))
+  done
+  REPLY="${s:0:i}…" REPLY_W=$(( used + 1 ))
+}
+
+fmt_age() {  # seconds -> REPLY: 42s below a minute, else fmt_dur
+  if [ "$1" -lt 60 ]; then REPLY="$1s"; else fmt_dur "$1"; fi
+}
+
+sub_parts() {  # sub_parts <row> <level>: CH/CH_W = chips, RT/RT_W = gauge and status; each level drops more
+  local i=$1 lvl=$2 cells=0
+  ROW="" ROW_W=0 PREV_BG=""
+  model_color "${s_model[i]}"
+  chip "$REPLY" "$CHIP_FG" "${s_model[i]}" "" 1
+  if [ "$lvl" -lt 4 ] && [ -n "${s_effort[i]}" ]; then
+    effort_colors "${s_effort[i]}"
+    chip "$effort_bg" "$effort_fg" "${s_effort[i]}"
+  fi
+  end_chips
+  CH=$ROW CH_W=$ROW_W
+  ROW="" ROW_W=0
+  if [ "${s_size[i]}" -gt 0 ]; then
+    case $lvl in 0) cells=8 ;; 1) cells=5 ;; esac
+    gauge ctx $(( s_tokens[i] * 1000 / s_size[i] )) "$cells"
+    if [ "$lvl" -lt 3 ]; then
+      fmt_tokens "${s_tokens[i]}"; put "38;2;$I_DIM" " $REPLY"
+      fmt_tokens "${s_size[i]}"; put "38;2;$I_DIM" "/$REPLY"
+    fi
+  elif [ "${s_tokens[i]}" -gt 0 ]; then
+    fmt_tokens "${s_tokens[i]}"; put "38;2;$I_DIM" "$REPLY tok"
+  fi
+  if [ "$lvl" -lt 5 ]; then  # a finished task gets a mark, a live one its running time
+    local sgr="38;2;$I_DIM" mark=""
+    case ${s_status[i]} in
+      completed) sgr="1;38;2;$I_GREEN" mark="✓" ;;
+      failed) sgr="1;38;2;$I_RED" mark="✘" ;;
+      killed) mark="✘" ;;
+      paused) mark="paused" ;;
+      *) [ "${s_age[i]}" -ge 0 ] && { fmt_age "${s_age[i]}"; mark=$REPLY; } ;;
+    esac
+    if [ -n "$mark" ]; then
+      [ -n "$ROW" ] && put "38;2;$I_FAINT" " · "
+      put "$sgr" "$mark"
+    fi
+  fi
+  RT=$ROW RT_W=$ROW_W
+}
+
+sub_left() {  # sub_left <row>: LEFT_W = chips plus name; SEP_W = width of the separator before the label
+  LEFT_W=$CH_W SEP_W=1
+  if [ -n "${s_name[$1]}" ]; then LEFT_W=$(( LEFT_W + 1 + s_name_w[$1] )) SEP_W=3; fi
+}
+
+subagents() {
+  command -v jq > /dev/null 2>&1 || return 0  # the default rows stay
+  local now="" cols=0 n i lvl fit want label col cap out="" start budget
+  local -a s_id s_model s_effort s_name s_label s_tokens s_size s_status s_age s_label_cells \
+    s_name_w s_label_w ch ch_w rt rt_w
+  eval "$(jq -r "$SUB_JQ" 2>/dev/null)"
+  n=${#s_id[@]}
+  [ "$n" -gt 0 ] || return 0
+  case $now in '' | *[!0-9]*) now=$(date +%s) ;; esac
+  case $cols in '' | *[!0-9]*) cols=0 ;; esac
+  [ -d "$CACHE_DIR" ] || mkdir -p "$CACHE_DIR" 2>/dev/null
+  pick_theme
+
+  # One level for every row keeps their gauges in one column: the first at which each row fits with
+  # at least 12 cells of its label (or, at the last level, without it).
+  for lvl in 0 1 2 3 4 5; do
+    fit=1
+    for (( i = 0; i < n; i++ )); do
+      sub_parts "$i" "$lvl"; sub_left "$i"
+      label=${s_label_w[i]}
+      [ "$label" -gt 12 ] && label=12
+      [ "$lvl" = 5 ] && label=0
+      want=$(( LEFT_W + 2 + RT_W ))
+      [ "$label" -gt 0 ] && want=$(( want + SEP_W + label ))
+      [ "$want" -le "$cols" ] || { fit=0; break; }
+    done
+    [ "$fit" = 1 ] && break
+  done
+  [ "$fit" = 1 ] || return 0  # too narrow even for the model and ctx: the default rows stay
+
+  # The gauge column: just past the widest name and label, but far enough left for every gauge.
+  col=0 cap=$cols
+  for (( i = 0; i < n; i++ )); do
+    sub_parts "$i" "$lvl"; sub_left "$i"
+    ch[i]=$CH ch_w[i]=$CH_W rt[i]=$RT rt_w[i]=$RT_W
+    want=$(( LEFT_W + 2 ))
+    [ "${s_label_w[i]}" -gt 0 ] && want=$(( want + SEP_W + s_label_w[i] ))
+    [ "$want" -gt "$col" ] && col=$want
+    [ $(( cols - RT_W )) -lt "$cap" ] && cap=$(( cols - RT_W ))
+  done
+  [ "$col" -gt "$cap" ] && col=$cap
+
+  for (( i = 0; i < n; i++ )); do
+    CH_W=${ch_w[i]}
+    sub_left "$i"
+    ROW=${ch[i]} ROW_W=$CH_W
+    if [ -n "${s_name[i]}" ]; then put 0 " "; put 1 "${s_name[i]}"; ROW_W=$LEFT_W; fi
+    start=$col
+    [ "$start" -lt $(( ROW_W + 2 )) ] && start=$(( ROW_W + 2 ))
+    budget=$(( start - 2 - ROW_W - SEP_W ))
+    if [ "${s_label_w[i]}" -gt 0 ] && { [ "$budget" -ge "${s_label_w[i]}" ] || [ "$budget" -ge 4 ]; }; then
+      if [ "$SEP_W" = 3 ]; then put "38;2;$I_FAINT" " · "; else put 0 " "; fi
+      clip "${s_label[i]}" "${s_label_cells[i]}" "$budget"
+      put "38;2;$I_DIM" "$REPLY"; ROW_W=$(( ROW_W - ${#REPLY} + REPLY_W ))
+    fi
+    [ -n "${rt[i]}" ] && printf -v REPLY '%*s' $(( start - ROW_W )) '' && put 0 "$REPLY"
+    ROW+="${rt[i]}${E}[0m"
+    out+="${s_id[i]}"$'\t'"$ROW"$'\n'
+  done
+  printf '%s' "$out" | jq -Rc 'split("\t") | {id: .[0], content: (.[1:] | join("\t"))}'
+}
+
 demo_case() {  # demo_case <title> <columns, 0 = current> <git porcelain> <jq filter over $base>
   local cols=$2
   [ "$cols" = 0 ] && cols=${COLUMNS:-120}
@@ -533,6 +720,22 @@ demo() {  # render representative states with fake session data
      | .rate_limits.five_hour = {used_percentage: 95, resets_at: ($now + 2400)}
      | .rate_limits.seven_day.used_percentage = 83 | .pr.review_state = "changes_requested"'
   demo_case "Narrow terminal (COLUMNS=60)" 60 "$dirty" '.'
+
+  printf '\n%s[2m── %s ──%s[0m\n' "$E" "Subagent panel rows (--subagents)" "$E"
+  jq -n --argjson now "$now" --argjson cols "${COLUMNS:-120}" '{columns: ($cols - 4), tasks: [
+    {id: "a", name: "reviewer", type: "local_agent", status: "running", description: "Review the diff",
+     label: "Reading statusline.sh", startTime: (($now - 200) * 1000), model: "claude-opus-5-5[1m]",
+     effort: "high", contextWindowSize: 1000000, tokenCount: 312000},
+    {id: "b", type: "local_agent", status: "running", description: "Find the auth handlers",
+     startTime: (($now - 42) * 1000), model: "claude-haiku-4-5-20251001", contextWindowSize: 200000,
+     tokenCount: 148000},
+    {id: "c", type: "local_agent", status: "completed", description: "Summarize the open issues",
+     startTime: (($now - 600) * 1000), model: "claude-sonnet-5-5", effort: "medium",
+     contextWindowSize: 1000000, tokenCount: 61000}]}' | bash "$0" --subagents | jq -r '.content'
 }
 
-if [ "$1" = --demo ]; then demo; else main; fi
+case $1 in
+  --demo) demo ;;
+  --subagents) subagents ;;
+  *) main ;;
+esac

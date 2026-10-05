@@ -479,6 +479,164 @@ def test_demo_renders_several_states_in_english():
     expect(not any(0xAC00 <= ord(c) <= 0xD7A3 for c in out), "Korean text in the demo")
 
 
+# --- subagent panel rows (--subagents) ------------------------------------
+
+def task(overrides=None, **fields):
+    d = {
+        "id": "a1",
+        "name": "reviewer",
+        "type": "local_agent",
+        "status": "running",
+        "description": "Review the diff",
+        "label": "Reading statusline.sh",
+        "startTime": (NOW - 200) * 1000,
+        "model": "claude-opus-5-5[1m]",
+        "effort": "high",
+        "contextWindowSize": 1000000,
+        "tokenCount": 312000,
+        "tokenSamples": [300000, 312000],
+        "cwd": REPO,
+    }
+    d.update(fields)
+    for key, value in (overrides or {}).items():
+        if value is DELETE:
+            d.pop(key, None)
+        else:
+            d[key] = value
+    return d
+
+
+SHELL_TASK = {"id": "b1", "type": "local_bash", "status": "running", "description": "npm test",
+              "startTime": NOW * 1000, "tokenCount": 0, "tokenSamples": [], "cwd": REPO}
+
+
+def run_sub(tasks, cols=120, **kw):
+    """Rows the --subagents mode prints, as {id: content}; asserts every line is a valid row object."""
+    data = {"session_id": "t", "cwd": REPO, "columns": cols, "tasks": tasks}
+    rc, out, err, _ = run(data, args=("--subagents",), **kw)
+    expect(rc == 0, f"rc={rc} err={err!r}")
+    rows = {}
+    for line in out.splitlines():
+        obj = json.loads(line)
+        expect(set(obj) == {"id", "content"} and isinstance(obj["content"], str), line)
+        rows[obj["id"]] = obj["content"]
+    return rows
+
+
+def test_subagent_rows_replace_only_tasks_with_a_model():
+    rows = run_sub([task(), SHELL_TASK])
+    expect(list(rows) == ["a1"], rows)
+
+
+def test_subagent_row_shows_model_effort_name_and_label():
+    v = visible(run_sub([task()])["a1"])
+    expect(re.search(r"Opus 5\.5 .*high .*reviewer · Reading statusline\.sh", v), v)
+
+
+def test_subagent_model_ids_become_family_and_version():
+    cases = {
+        "claude-opus-5-5[1m]": "Opus 5.5",
+        "claude-haiku-4-5-20251001": "Haiku 4.5",
+        "claude-sonnet-4-20250514": "Sonnet 4",
+        "claude-3-5-sonnet-20241022": "Sonnet 3.5",
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0": "Sonnet 4.5",
+        "claude-opus-4-1@20250805": "Opus 4.1",
+        "my-custom-model": "my-custom-model",
+    }
+    for model, label in cases.items():
+        v = visible(run_sub([task(model=model)])["a1"])
+        expect(v.startswith(f" {label} "), f"{model}: {v!r}")
+
+
+def test_subagent_model_chip_uses_family_color():
+    content = run_sub([task(model="claude-haiku-4-5-20251001")])["a1"]
+    expect(f"48;2;{TEAL}" in color_before(content, "Haiku 4.5"), repr(content[:80]))
+
+
+def test_subagent_ctx_gauge_shows_its_own_usage():
+    v = visible(run_sub([task(tokenCount=148000, contextWindowSize=200000)])["a1"])
+    expect("ctx" in v and "74%" in v and "148k/200k" in v, v)
+
+
+def test_subagent_without_window_size_shows_token_count_only():
+    v = visible(run_sub([task({"contextWindowSize": DELETE}, tokenCount=5000)])["a1"])
+    expect("ctx" not in v and "5k tok" in v, v)
+
+
+def test_subagent_effort_chip_is_absent_when_inherited():
+    v = visible(run_sub([task({"effort": DELETE})])["a1"])
+    expect("high" not in v and "Opus 5.5" in v, v)
+
+
+def test_subagent_numeric_effort_shows_token_budget():
+    v = visible(run_sub([task(effort=32000)])["a1"])
+    expect(" 32k " in v, v)
+
+
+def test_subagent_status_marks_and_running_time():
+    rows = run_sub([task(id="run"), task(id="ok", status="completed"), task(id="bad", status="failed"),
+                    task(id="new", startTime=(int(time.time()) - 42) * 1000)])
+    expect(visible(rows["run"]).endswith("· 3m"), visible(rows["run"]))
+    expect(re.search(r"· 4[23]s$", visible(rows["new"])), visible(rows["new"]))
+    expect(visible(rows["ok"]).endswith("· ✓"), visible(rows["ok"]))
+    expect(visible(rows["bad"]).endswith("· ✘") and RED in color_before(rows["bad"], "✘"), repr(rows["bad"]))
+
+
+def test_subagent_gauges_line_up_in_one_column():
+    rows = run_sub([task(id="x"), task(id="y", name="", label="코드베이스에서 인증 핸들러 찾기",
+                                        model="claude-haiku-4-5-20251001")])
+    cols = [width(r[:r.find("ctx")]) for r in rows.values()]
+    expect(len(set(cols)) == 1, f"ctx columns {cols}: {[visible(r) for r in rows.values()]!r}")
+
+
+def test_subagent_rows_fit_the_given_columns():
+    tasks = [task(), task(id="k", name="", model="claude-haiku-4-5-20251001", effort="max",
+                          label="코드베이스에서 인증 핸들러 위치를 찾아서 정리하고 요약하기"),
+             task(id="c", status="completed", label="x" * 300)]
+    for cols in (200, 100, 80, 60, 45, 32):
+        for content in run_sub(tasks, cols=cols).values():
+            expect(width(content) <= cols, f"cols={cols} width={width(content)}: {visible(content)!r}")
+
+
+def test_subagent_narrow_rows_drop_details_before_the_gauge():
+    v = visible(run_sub([task()], cols=34)["a1"])
+    expect("Opus 5.5" in v and "ctx 31%" in v and "high" not in v, v)
+
+
+def test_subagent_too_narrow_keeps_the_default_rows():
+    expect(run_sub([task()], cols=12) == {}, "rows printed at 12 columns")
+
+
+def test_subagent_label_is_sanitized_into_one_line():
+    rows = run_sub([task(label='say "hi"\n\tthen\x1b[31m \\ leave')])
+    v = visible(rows["a1"])
+    expect('say "hi" then [31m \\ leave' in v and "\n" not in rows["a1"], v)
+
+
+def test_subagent_label_equal_to_name_is_not_repeated():
+    v = visible(run_sub([task({"label": DELETE}, name="Review the diff")])["a1"])
+    expect(v.count("Review the diff") == 1, v)
+
+
+def test_subagent_plain_glyphs_avoid_private_use_characters():
+    content = run_sub([task()], glyphs="plain")["a1"]
+    expect(not private_use(content), visible(content))
+
+
+def test_subagent_mode_prints_nothing_without_tasks_or_jq():
+    expect(run_sub([]) == {}, "rows for an empty task list")
+    expect(run_sub([SHELL_TASK]) == {}, "rows for shell tasks only")
+    rc, out, err, _ = run({"columns": 80, "tasks": [task()]}, args=("--subagents",), path="/nonexistent")
+    expect(rc == 0 and out == "", f"rc={rc} out={out!r} err={err!r}")
+    rc, out, err, _ = run(None, raw_stdin="", args=("--subagents",))
+    expect(rc == 0 and out == "", f"rc={rc} out={out!r} err={err!r}")
+
+
+def test_demo_includes_subagent_rows():
+    _, out, _, _ = run(None, raw_stdin="", args=("--demo",))
+    expect("Subagent panel rows" in out and "Haiku 4.5" in visible(out), visible(out)[-400:])
+
+
 # --- speed and caching ----------------------------------------------------
 
 def skip_perf():
