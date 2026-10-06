@@ -55,6 +55,7 @@ GIT_DIRTY = (
     "1 .M N... 100644 100644 100644 a b mod2.txt\n"
     "? new.txt\n"
 )
+GIT_EDITED = GIT_DIRTY + "# diff.lines 12 4\n"
 GIT_CONFLICT = GIT_CLEAN + "u UU N... 100644 100644 100644 100644 a b c conflict.txt\n"
 GIT_DETACHED = "# branch.oid ca8cb9954662e18d96c1e10ff130d4249a0c8b6e\n# branch.head (detached)\n"
 GIT_BRANCH = "# branch.oid ca8cb99\n# branch.head octocat/issue-9\n"
@@ -339,10 +340,43 @@ def test_gitlab_mr_uses_bang_prefix():
 # --- row 1: session stats -------------------------------------------------
 
 def test_session_stats_follow_chips():
-    _, out, _, rows = run(full())
+    _, out, _, rows = run(full(), git=GIT_EDITED)
     v = visible(rows[0])
-    for token in ("$4.21", "23m", "+156", "−23", "cache 42m"):
+    for token in ("$4.21", "23m", "+12 −4", "cache 42m"):
         expect(token in v, f"missing {token}: {v}")
+
+
+def test_line_counts_ignore_the_session_edit_counters():
+    # cost.total_lines_* counts every Edit/Write this session, even outside the repository or since undone.
+    _, out, _, rows = run(full(), git=GIT_CLEAN)
+    v = visible(rows[0])
+    for token in ("+156", "−23"):
+        expect(token not in v, f"unexpected {token}: {v}")
+
+
+def test_line_counts_come_from_the_working_tree_diff():
+    path = make_repo()
+    git = ["git", "-C", path, "-c", "user.name=t", "-c", "user.email=t@t"]
+    with open(os.path.join(path, "a.txt"), "w") as f:
+        f.write("one\ntwo\nthree\n")
+    subprocess.run(git + ["add", "a.txt"], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "init"], check=True)
+    with open(os.path.join(path, "a.txt"), "w") as f:
+        f.write("one\n2\nthree\nfour\n")  # unstaged: +2 −1
+    with open(os.path.join(path, "b.txt"), "w") as f:
+        f.write("x\ny\n")
+    subprocess.run(git + ["add", "b.txt"], check=True)  # staged: +2
+    data = full({"cwd": path, "workspace.current_dir": path, "workspace.project_dir": path})
+    env_tmp = os.environ.get("TMPDIR")
+    os.environ["TMPDIR"] = tempfile.mkdtemp()
+    try:
+        _, out, _, rows = run(data, git=None)
+    finally:
+        if env_tmp is None:
+            os.environ.pop("TMPDIR", None)
+        else:
+            os.environ["TMPDIR"] = env_tmp
+    expect("+4 −1" in visible(rows[0]), visible(rows[0]))
 
 
 def test_zero_stats_are_hidden():

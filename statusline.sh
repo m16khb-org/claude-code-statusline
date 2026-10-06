@@ -2,7 +2,7 @@
 # claude-code-statusline: a two-row powerline status line for Claude Code.
 # https://github.com/m16khb-org/claude-code-statusline (MIT)
 #
-#   Row 1  [model][effort] [dir] [git] [PR/MR]  cost · duration · +added −removed · cache TTL
+#   Row 1  [model][effort] [dir] [git] [PR/MR]  cost · duration · +added −removed vs HEAD · cache TTL
 #   Row 2  ctx / 5h / 7d / per-model weekly (e.g. Fable) gauges: gradient bar, used %, reset countdown (↻), and a red ⚠ time-to-limit
 #          warning when the window's average pace would exhaust it before the reset.
 # Usage colors: <50% green, 50-64 yellow, 65-79 orange, >=80 red. Narrow terminals ($COLUMNS) shrink
@@ -78,8 +78,6 @@ def tenths: num | if . == null then "" else . * 10 | round end;
     d7_reset: (.rate_limits.seven_day.resets_at | int),
     cost_cents: (((.cost.total_cost_usd | num) // 0) * 100 | round),
     dur_s: (((.cost.total_duration_ms | num) // 0) / 1000 | floor),
-    lines_add: (.cost.total_lines_added | int),
-    lines_del: (.cost.total_lines_removed | int),
     cache_left: (if .prompt_cache.warm == true then (.prompt_cache.expires_at | int) - $now else 0 end),
     pr_num: (.pr.number // "" | tostring),
     pr_url: (.pr.url // ""),
@@ -116,7 +114,7 @@ pick_theme() {  # STATUSLINE_THEME, else macOS appearance cached for THEME_TTL s
   set_palette "$theme"
 }
 
-load_git() {  # GIT_RAW = `git status --porcelain=v2 --branch` for cwd, cached per directory
+load_git() {  # GIT_RAW = `git status --porcelain=v2 --branch` plus a "# diff.lines" line for cwd, cached per directory
   if [ -n "${STATUSLINE_GIT_RAW+x}" ]; then GIT_RAW=$STATUSLINE_GIT_RAW; return 0; fi
   local key=${cwd//[^A-Za-z0-9._-]/_} f stamp=""
   [ ${#key} -gt 180 ] && key=${key: -180}
@@ -137,7 +135,7 @@ load_git() {  # GIT_RAW = `git status --porcelain=v2 --branch` for cwd, cached p
 }
 
 refresh_git() {  # refresh_git <cache-file>: one refresher at a time; a lock older than 30s is taken over
-  local f=$1 lock="$1.lock" held="" out
+  local f=$1 lock="$1.lock" held="" out stat add=0 del=0 re_add='([0-9]+) insertion' re_del='([0-9]+) deletion'
   if ! ( set -o noclobber; printf '%s' "$now" > "$lock" ) 2>/dev/null; then
     read -r held < "$lock" 2>/dev/null
     case $held in '' | *[!0-9]*) held=0 ;; esac
@@ -145,6 +143,17 @@ refresh_git() {  # refresh_git <cache-file>: one refresher at a time; a lock old
     printf '%s' "$now" > "$lock" 2>/dev/null
   fi
   out=$(git -C "$cwd" --no-optional-locks status --porcelain=v2 --branch 2>/dev/null)
+  if [ -n "$out" ]; then
+    # Staged and unstaged lines against HEAD (the empty tree before the first commit); untracked files
+    # are not counted. The session's cost.total_lines_* is not used: it counts every Edit/Write,
+    # including files outside the repository and edits since undone or committed.
+    stat=$(git -C "$cwd" --no-optional-locks diff HEAD --shortstat --no-ext-diff 2>/dev/null ||
+      git -C "$cwd" --no-optional-locks diff "$(git -C "$cwd" hash-object -t tree /dev/null)" \
+        --shortstat --no-ext-diff 2>/dev/null)
+    [[ $stat =~ $re_add ]] && add=${BASH_REMATCH[1]}
+    [[ $stat =~ $re_del ]] && del=${BASH_REMATCH[1]}
+    out+=$'\n'"# diff.lines $add $del"
+  fi
   printf '%s\n%s' "$now" "$out" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f" 2>/dev/null
   rm -f "$lock"
 }
@@ -184,15 +193,16 @@ refresh_usage() {  # refresh_usage <cache-file>: like refresh_git; a failed fetc
   rm -f "$lock"
 }
 
-parse_git() {  # GIT_RAW -> G_BRANCH, G_AHEAD/G_BEHIND, G_STAGED/G_MOD/G_UNTR/G_CONF; fails outside a repo
+parse_git() {  # GIT_RAW -> G_BRANCH, G_AHEAD/G_BEHIND, G_STAGED/G_MOD/G_UNTR/G_CONF, G_ADD/G_DEL; fails outside a repo
   local line oid="" xy
-  G_BRANCH="" G_AHEAD=0 G_BEHIND=0 G_STAGED=0 G_MOD=0 G_UNTR=0 G_CONF=0
+  G_BRANCH="" G_AHEAD=0 G_BEHIND=0 G_STAGED=0 G_MOD=0 G_UNTR=0 G_CONF=0 G_ADD=0 G_DEL=0
   [ -n "$GIT_RAW" ] || return 1
   while IFS= read -r line; do
     case $line in
       "# branch.oid "*) oid=${line#\# branch.oid } ;;
       "# branch.head "*) G_BRANCH=${line#\# branch.head } ;;
       "# branch.ab "*) set -- ${line#\# branch.ab }; G_AHEAD=${1#+} G_BEHIND=${2#-} ;;
+      "# diff.lines "*) set -- ${line#\# diff.lines }; G_ADD=${1:-0} G_DEL=${2:-0} ;;
       "1 "* | "2 "*)
         xy=${line:2:2}
         [ "${xy:0:1}" != . ] && G_STAGED=$(( G_STAGED + 1 ))
@@ -202,6 +212,7 @@ parse_git() {  # GIT_RAW -> G_BRANCH, G_AHEAD/G_BEHIND, G_STAGED/G_MOD/G_UNTR/G_
     esac
   done <<< "$GIT_RAW"
   [ "$G_BRANCH" = "(detached)" ] && G_BRANCH=${oid:0:7}
+  case $G_ADD$G_DEL in '' | *[!0-9]*) G_ADD=0 G_DEL=0 ;; esac
   [ -n "$G_BRANCH" ]
 }
 
@@ -406,9 +417,9 @@ prepare() {  # derive chip texts and colors once; build_row1 only chooses which 
   # Braces matter: bash 3.2 reads the first byte of a following multibyte char as part of the name.
   [ "$fast" = 1 ] && effort_txt="${effort_txt:+${effort_txt}·}fast"
 
-  has_git=0 git_counts=""
+  has_git=0 git_counts="" lines_add=0 lines_del=0
   if parse_git; then
-    has_git=1
+    has_git=1 lines_add=$G_ADD lines_del=$G_DEL
     [ "$G_AHEAD" -gt 0 ] && git_counts+=" $UP$G_AHEAD"
     [ "$G_BEHIND" -gt 0 ] && git_counts+=" $DOWN$G_BEHIND"
     [ "$G_CONF" -gt 0 ] && git_counts+=" ✘$G_CONF"
@@ -744,7 +755,7 @@ demo() {  # render representative states with fake session data
     workspace: {current_dir: "/home/you/src/my-app", project_dir: "/home/you/src/my-app",
                 repo: {host: "github.com", owner: "octocat", name: "my-app"}},
     effort: {level: "max"},
-    cost: {total_cost_usd: 4.21, total_duration_ms: 1380000, total_lines_added: 156, total_lines_removed: 23},
+    cost: {total_cost_usd: 4.21, total_duration_ms: 1380000},
     context_window: {used_percentage: 28, total_input_tokens: 283000, context_window_size: 1000000},
     exceeds_200k_tokens: true,
     prompt_cache: {warm: true, expires_at: ($now + 2520)},
@@ -753,7 +764,7 @@ demo() {  # render representative states with fake session data
     pr: {number: 512, url: "https://github.com/octocat/my-app/pull/512", review_state: "approved"}
   }'
   clean=$'# branch.oid ca8cb99\n# branch.head main\n# branch.ab +0 -0'
-  dirty=$'# branch.oid ca8cb99\n# branch.head main\n# branch.ab +2 -0\n1 M. N... a\n1 .M N... b\n1 .M N... c\n? d'
+  dirty=$'# branch.oid ca8cb99\n# branch.head main\n# branch.ab +2 -0\n1 M. N... a\n1 .M N... b\n1 .M N... c\n? d\n# diff.lines 156 23'
   conflict=$'# branch.oid ca8cb99\n# branch.head main\n# branch.ab +0 -3\nu UU N... a'
   demo_case "Normal" 0 "$clean" '.'
   demo_case "Warning: ctx 58%, 5h limit on pace to run out before it resets" 0 "$dirty" \
