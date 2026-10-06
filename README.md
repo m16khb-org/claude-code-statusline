@@ -21,7 +21,10 @@ gauges for the context window and your plan's usage limits.
 | PR / MR | `#512` on GitHub, `!512` on GitLab; Cmd/Ctrl+click opens it | teal approved, red changes requested, cyan pending, slate draft |
 
 After the chips come the session cost, duration, lines added and removed, and the time left before the
-prompt cache expires.
+prompt cache expires. The line counts are the repository's staged and unstaged changes against `HEAD`
+(`git diff HEAD --shortstat`; untracked files are not counted), not Claude Code's
+`cost.total_lines_added`, which counts every edit in the session, including files outside the repository
+and edits since undone or committed.
 
 **Row 2**: gauges.
 
@@ -129,7 +132,7 @@ Put these variables in front of the command in `settings.json`, for example
 
 ## Speed
 
-A render takes about 20 to 40 ms. One `jq` call reads the session JSON. `git status` runs in the
+A render takes about 20 to 40 ms. One `jq` call reads the session JSON. `git status` and `git diff` run in the
 background and its result is cached for 5 seconds, so a slow repository never delays a render. Claude
 Code cancels a render that is still running when the next update arrives, so a slow script would miss
 updates. The subagent rows take about 10 to 20 ms, with two `jq` calls and no git.
